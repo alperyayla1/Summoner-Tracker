@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Summoner Timer</title>
+<style>
+:root{--bg:#0e0f12;--card:#17181d;--line:#2a2b31;--gold:#c89b3c;--cyan:#4fc3d9;--txt:#e8e8ea;--mut:#8a8b93}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;background:var(--bg);color:var(--txt);font-family:system-ui,-apple-system,"Segoe UI",sans-serif;touch-action:manipulation;-webkit-user-select:none;user-select:none}
+body{padding:10px 10px 24px;max-width:480px;margin:0 auto}
+header{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px}
+h1{font-size:15px;margin:0;font-weight:600;color:var(--mut)}
+button{font:inherit;color:inherit;cursor:pointer}
+.reset{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:6px 12px;font-size:13px}
+.hint{font-size:11px;color:var(--mut);margin:0 0 8px}
+#msg{font-size:12px;color:#e0a050;margin:0 0 8px}
+.row{display:flex;align-items:center;gap:8px;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:8px;margin-bottom:8px}
+.lane{width:14px;font-size:10px;color:var(--mut);writing-mode:vertical-rl;transform:rotate(180deg);text-align:center}
+.tile{position:relative;border:1px solid var(--line);border-radius:10px;background:#1f2026;overflow:hidden;padding:0;flex:none}
+.champ{width:68px;height:68px}
+.spell{width:60px;height:60px}
+.tile img{width:100%;height:100%;display:block;pointer-events:none}
+.tile .plus{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:26px;color:var(--mut)}
+.spell.cd img{filter:brightness(.28)}
+.spell .t{position:absolute;inset:0;display:none;align-items:center;justify-content:center;font-weight:700;font-size:20px;text-shadow:0 1px 3px #000}
+.spell.cd .t{display:flex}
+.tg{display:flex;flex-direction:column;gap:6px;margin-left:auto}
+.tg button{width:48px;height:30px;border-radius:8px;border:1px solid var(--line);background:#2a2b30;color:#777;font-size:12px;font-weight:700}
+.tg button.on{background:var(--gold);color:#000;border-color:var(--gold)}
+.tg button.on.plus{background:var(--cyan);border-color:var(--cyan)}
+.modal{position:fixed;inset:0;background:rgba(0,0,0,.92);display:none;flex-direction:column;z-index:10;padding:10px}
+.modal.open{display:flex}
+.mtop{display:flex;gap:8px;margin-bottom:8px}
+.mtop input{flex:1;min-width:0;background:#23242a;color:var(--txt);border:1px solid var(--line);border-radius:8px;padding:10px;font-size:16px}
+.mtop button{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:0 14px;font-size:18px}
+.grid{flex:1;overflow-y:auto;display:grid;grid-template-columns:repeat(auto-fill,minmax(60px,1fr));gap:6px;align-content:start}
+.pick{background:none;border:1px solid transparent;border-radius:8px;padding:2px;display:flex;flex-direction:column;align-items:center}
+.pick img{width:52px;height:52px;border-radius:8px}
+.pick span{font-size:9px;color:var(--mut);margin-top:2px;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pick:active{border-color:var(--gold)}
+.sgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.sgrid .pick img{width:60px;height:60px}
+.sgrid .pick span{font-size:12px}
+</style>
+</head>
+<body>
+<header>
+  <h1>Summoner Timer</h1>
+  <button class="reset" id="reset">Reset</button>
+</header>
+<p class="hint">Tap spell: start / cancel &middot; Hold spell: change &middot; Hold champion: clear</p>
+<p id="msg"></p>
+<div id="rows"></div>
+
+<div class="modal" id="champModal">
+  <div class="mtop">
+    <input id="q" type="text" placeholder="Type to search..." autocomplete="off" autocapitalize="off" spellcheck="false">
+    <button id="champClose">&#10005;</button>
+  </div>
+  <div class="grid" id="champGrid"></div>
+</div>
+
+<div class="modal" id="spellModal">
+  <div class="mtop">
+    <input type="text" value="Choose spell" disabled>
+    <button id="spellClose">&#10005;</button>
+  </div>
+  <div class="grid sgrid" id="spellGrid"></div>
+</div>
+
+<script>
+(function(){
+'use strict';
+// ------------------------------------------------ settings (edit if a patch changes them)
+var DD='https://ddragon.leagueoflegends.com';
+var CI_HASTE=18, IB_HASTE=10, IB_MID_HASTE=20, MID=2;
+var SPELLS={
+  Flash:[300,'SummonerFlash'], Teleport:[300,'SummonerTeleport'], Ignite:[180,'SummonerDot'],
+  Heal:[240,'SummonerHeal'], Barrier:[180,'SummonerBarrier'], Exhaust:[240,'SummonerExhaust'],
+  Cleanse:[240,'SummonerBoost'], Ghost:[240,'SummonerHaste'], Smite:[90,'SummonerSmite']
+};
+var LANES=['TOP','JNG','MID','BOT','SUP'];
+var DEFAULT=[['Teleport','Flash'],['Smite','Flash'],['Ignite','Flash'],['Heal','Flash'],['Exhaust','Flash']];
+
+// ------------------------------------------------ helpers
+var store={
+  get:function(k){try{return JSON.parse(localStorage.getItem(k));}catch(e){return null;}},
+  set:function(k,v){try{localStorage.setItem(k,JSON.stringify(v));}catch(e){}}
+};
+function el(tag,cls,html){var e=document.createElement(tag);if(cls)e.className=cls;if(html!==undefined)e.innerHTML=html;return e;}
+function fmt(sec){var s=Math.ceil(sec);return s>=60?Math.floor(s/60)+':'+('0'+(s%60)).slice(-2):String(s);}
+function norm(s){return s.toLowerCase().replace(/[^a-z0-9]/g,'');}
+
+// ------------------------------------------------ state
+function fresh(){return DEFAULT.map(function(p){return {champ:null,ci:false,ib:false,sp:p.map(function(n){return {name:n,end:null};})};});}
+function valid(s){
+  if(!Array.isArray(s)||s.length!==5)return false;
+  return s.every(function(r){return r&&Array.isArray(r.sp)&&r.sp.length===2&&r.sp.every(function(x){return SPELLS[x.name];});});
+}
+var S=store.get('sst2');if(!valid(S))S=fresh();
+function save(){store.set('sst2',S);}
+
+var VER='16.20.1';   // fallback; replaced with the latest Data Dragon version after loading
+var CHAMPS=[];
+
+function setMsg(t){document.getElementById('msg').textContent=t||'';}
+
+function loadData(){
+  var cached=store.get('champs2');
+  if(cached&&cached.ver&&cached.list){VER=cached.ver;CHAMPS=cached.list;}
+  render();
+  fetch(DD+'/api/versions.json').then(function(r){return r.json();}).then(function(vs){
+    var v=vs[0];
+    if(cached&&cached.ver===v)return;
+    return fetch(DD+'/cdn/'+v+'/data/en_US/champion.json').then(function(r){return r.json();}).then(function(d){
+      CHAMPS=Object.keys(d.data).map(function(k){return {name:d.data[k].name,id:d.data[k].id};})
+        .sort(function(a,b){return a.name.localeCompare(b.name);});
+      VER=v;store.set('champs2',{ver:v,list:CHAMPS});render();
+    });
+  }).catch(function(){
+    if(!CHAMPS.length)setMsg("Couldn't load champion list. Check your internet connection and reload.");
+  });
+}
+
+// ------------------------------------------------ press / long-press
+function press(b,tap,long){
+  var t=null,fired=false;
+  b.addEventListener('pointerdown',function(){
+    fired=false;clearTimeout(t);
+    t=setTimeout(function(){fired=true;if(navigator.vibrate)navigator.vibrate(30);long();},450);
+  });
+  function end(){clearTimeout(t);}
+  b.addEventListener('pointerup',function(){end();if(!fired)tap();});
+  b.addEventListener('pointerleave',end);
+  b.addEventListener('pointercancel',end);
+  b.addEventListener('contextmenu',function(e){e.preventDefault();});
+}
+
+// ------------------------------------------------ actions
+function hasteFor(i){var r=S[i];return (r.ci?CI_HASTE:0)+(r.ib?(i===MID?IB_MID_HASTE:IB_HASTE):0);}
+function toggleSpell(i,j){
+  var s=S[i].sp[j];
+  if(s.end){s.end=null;}
+  else{s.end=Date.now()+SPELLS[s.name][0]*100/(100+hasteFor(i))*1000;}
+  save();tick();
+}
+
+// ------------------------------------------------ render
+var target=null;
+function render(){
+  var root=document.getElementById('rows');root.innerHTML='';
+  S.forEach(function(r,i){
+    var row=el('div','row');
+    row.appendChild(el('div','lane',LANES[i]));
+    var ch=el('button','tile champ');
+    if(r.champ)ch.innerHTML='<img alt="" src="'+DD+'/cdn/'+VER+'/img/champion/'+r.champ+'.png">';
+    else ch.innerHTML='<span class="plus">+</span>';
+    press(ch,function(){openChamp(i);},function(){r.champ=null;save();render();});
+    row.appendChild(ch);
+    r.sp.forEach(function(s,j){
+      var b=el('button','tile spell');
+      b.dataset.i=i;b.dataset.j=j;
+      b.innerHTML='<img alt="" src="'+DD+'/cdn/'+VER+'/img/spell/'+SPELLS[s.name][1]+'.png"><span class="t"></span>';
+      press(b,function(){toggleSpell(i,j);},function(){openSpell(i,j);});
+      row.appendChild(b);
+    });
+    var tg=el('div','tg');
+    var ci=el('button',r.ci?'on':'','CI');
+    ci.onclick=function(){r.ci=!r.ci;save();render();};
+    var mid=(i===MID);
+    var ib=el('button',(r.ib?'on ':'')+(mid?'plus':''),mid?'IB+':'IB');
+    ib.onclick=function(){r.ib=!r.ib;save();render();};
+    tg.appendChild(ci);tg.appendChild(ib);
+    row.appendChild(tg);
+    root.appendChild(row);
+  });
+  tick();
+}
+
+function tick(){
+  var now=Date.now(),changed=false;
+  document.querySelectorAll('.spell').forEach(function(b){
+    var s=S[b.dataset.i].sp[b.dataset.j];
+    if(s.end&&now>=s.end){s.end=null;changed=true;if(navigator.vibrate)navigator.vibrate(60);}
+    var t=b.querySelector('.t');
+    if(s.end){b.classList.add('cd');t.textContent=fmt((s.end-now)/1000);}
+    else{b.classList.remove('cd');t.textContent='';}
+  });
+  if(changed)save();
+}
+setInterval(tick,250);
+
+// ------------------------------------------------ champion picker
+var q=document.getElementById('q'),champModal=document.getElementById('champModal'),champGrid=document.getElementById('champGrid');
+function closeChamp(){champModal.classList.remove('open');q.blur();}
+function openChamp(i){
+  if(!CHAMPS.length){setMsg("Champion list not loaded yet. Check your internet connection.");return;}
+  target=i;champGrid.innerHTML='';
+  CHAMPS.forEach(function(c){
+    var b=el('button','pick');
+    b.dataset.n=norm(c.name);b.title=c.name;
+    b.innerHTML='<img loading="lazy" alt="'+c.name+'" src="'+DD+'/cdn/'+VER+'/img/champion/'+c.id+'.png"><span>'+c.name+'</span>';
+    b.onclick=function(){S[target].champ=c.id;save();closeChamp();render();};
+    champGrid.appendChild(b);
+  });
+  q.value='';champModal.classList.add('open');setTimeout(function(){q.focus();},50);
+}
+q.addEventListener('input',function(){
+  var v=norm(q.value);
+  champGrid.querySelectorAll('.pick').forEach(function(b){b.style.display=(!v||b.dataset.n.indexOf(v)>=0)?'':'none';});
+});
+q.addEventListener('keydown',function(e){
+  if(e.key==='Enter'){
+    var first=Array.prototype.find.call(champGrid.querySelectorAll('.pick'),function(b){return b.style.display!=='none';});
+    if(first)first.click();
+  }
+});
+document.getElementById('champClose').onclick=closeChamp;
+
+// ------------------------------------------------ spell picker
+var spellModal=document.getElementById('spellModal'),spellGrid=document.getElementById('spellGrid');
+function openSpell(i,j){
+  spellGrid.innerHTML='';
+  Object.keys(SPELLS).forEach(function(n){
+    var b=el('button','pick','<img alt="'+n+'" src="'+DD+'/cdn/'+VER+'/img/spell/'+SPELLS[n][1]+'.png"><span>'+n+'</span>');
+    b.onclick=function(){S[i].sp[j]={name:n,end:null};save();spellModal.classList.remove('open');render();};
+    spellGrid.appendChild(b);
+  });
+  spellModal.classList.add('open');
+}
+document.getElementById('spellClose').onclick=function(){spellModal.classList.remove('open');};
+
+// ------------------------------------------------ reset + keep screen on
+document.getElementById('reset').onclick=function(){
+  if(confirm('Reset everything?')){S=fresh();save();render();}
+};
+function wake(){try{if('wakeLock' in navigator)navigator.wakeLock.request('screen').catch(function(){});}catch(e){}}
+document.addEventListener('pointerdown',wake,{once:true});
+document.addEventListener('visibilitychange',function(){if(document.visibilityState==='visible')wake();});
+
+loadData();
+})();
+</script>
+</body>
+</html>
